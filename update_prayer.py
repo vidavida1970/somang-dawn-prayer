@@ -6,27 +6,30 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from youtube_transcript_api import YouTubeTranscriptApi
 
-PLAYLIST_ID = "PLkaiRsguh-Kz991rmz2yaM-6a1BatlJFT"
+CHANNEL_ID = "UCIItIEnZPjKo0eqvq9qIJAg"
 PRAYERS_DIR = "prayers"
 ARCHIVE_FILE = "archive.json"
 
-def get_latest_video_info():
-    """유튜브 RSS 피드에서 최신 영상 정보 추출"""
-    rss_url = f"https://www.youtube.com/feeds/videos.xml?playlist_id={PLAYLIST_ID}"
+def get_recent_videos():
+    """유튜브 채널 RSS 피드에서 새벽기도회 영상 목록 추출"""
+    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={CHANNEL_ID}"
     req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
+    videos = []
     try:
         with urllib.request.urlopen(req) as response:
             xml_data = response.read()
         root = ET.fromstring(xml_data)
         ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
-        entry = root.find('atom:entry', ns)
-        if entry is not None:
-            video_id = entry.find('yt:videoId', ns).text
-            title = entry.find('atom:title', ns).text
-            return video_id, title
+        for entry in root.findall('atom:entry', ns):
+            title_el = entry.find('atom:title', ns)
+            id_el = entry.find('yt:videoId', ns)
+            if title_el is not None and id_el is not None:
+                title = title_el.text.strip()
+                if "새벽기도회" in title:
+                    videos.append((id_el.text.strip(), title))
     except Exception as e:
         print(f"RSS 조회 실패: {e}")
-    return None, None
+    return videos
 
 def extract_date_from_title(title):
     """영상 제목에서 날짜(YYYYMMDD 또는 오늘 날짜) 추출"""
@@ -42,7 +45,7 @@ def get_prayer_text(video_id):
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko'])
     except Exception as e:
         print(f"자막 로드 실패: {e}")
-        return "당일 새벽기도 영상의 자막을 불러오는 중입니다."
+        return "당일 새벽기도 영상의 말씀과 기도 은혜를 나누는 공간입니다. 아래 영상 재생을 통해 목사님의 기도와 설교를 함께하실 수 있습니다."
 
     prayer_lines = []
     for item in transcript_list:
@@ -53,6 +56,9 @@ def get_prayer_text(video_id):
         if ("기도합니다" in text or "기도드리옵나이다" in text or "기도 드립니다" in text) and "아멘" in text:
             break
             
+    if not prayer_lines:
+        return "당일 새벽기도 영상의 말씀과 기도 은혜를 나누는 공간입니다. 아래 영상 재생을 통해 목사님의 기도와 설교를 함께하실 수 있습니다."
+
     return " ".join(prayer_lines)
 
 def load_archive():
@@ -77,7 +83,6 @@ def build_html_page(date_str, video_id, video_title, prayer_text, is_subpage=Fal
     current_url = f"https://vidavida1970.github.io/somang-dawn-prayer/{'prayers/' + date_str + '.html' if is_subpage else ''}"
     home_link = '<div style="margin-bottom: 20px;"><a href="../index.html" style="color: #2563eb; text-decoration: none; font-weight: bold;">← 오늘의 기도문(홈)으로 가기</a></div>' if is_subpage else ''
 
-    # 지난 기도 목록 HTML 조립
     archive_html = ""
     if not is_subpage and archive_list:
         archive_items = ""
@@ -185,35 +190,37 @@ def build_html_page(date_str, video_id, video_title, prayer_text, is_subpage=Fal
 
 def main():
     os.makedirs(PRAYERS_DIR, exist_ok=True)
-    video_id, video_title = get_latest_video_info()
-    if not video_id:
-        print("최신 영상을 찾지 못했습니다.")
+    recent_videos = get_recent_videos()
+    if not recent_videos:
+        print("새벽기도 영상을 찾지 못했습니다.")
         return
 
-    date_str = extract_date_from_title(video_title)
-    print(f"[{date_str}] 영상 확인: {video_title}")
+    latest_video_id, latest_video_title = recent_videos[0]
+    latest_date_str = extract_date_from_title(latest_video_title)
+    print(f"최신 새벽기도 영상: [{latest_date_str}] {latest_video_title}")
 
-    prayer_text = get_prayer_text(video_id)
-
-    # 1. 날짜별 개별 파일 저장 (prayers/YYYY-MM-DD.html)
-    subpage_html = build_html_page(date_str, video_id, video_title, prayer_text, is_subpage=True)
-    subpage_path = os.path.join(PRAYERS_DIR, f"{date_str}.html")
-    with open(subpage_path, "w", encoding="utf-8") as f:
-        f.write(subpage_html)
-
-    # 2. 아카이브 목록 갱신
     archive = load_archive()
-    # 중복 방지 (기존 동일 날짜가 있으면 갱신)
-    archive = [item for item in archive if item['date'] != date_str]
-    archive.insert(0, {"date": date_str, "title": video_title, "id": video_id})
+
+    for vid, title in reversed(recent_videos):
+        d_str = extract_date_from_title(title)
+        sub_path = os.path.join(PRAYERS_DIR, f"{d_str}.html")
+        if not os.path.exists(sub_path) or d_str == latest_date_str:
+            p_text = get_prayer_text(vid)
+            sub_html = build_html_page(d_str, vid, title, p_text, is_subpage=True)
+            with open(sub_path, "w", encoding="utf-8") as f:
+                f.write(sub_html)
+
+        archive = [item for item in archive if item['date'] != d_str]
+        archive.insert(0, {"date": d_str, "title": title, "id": vid})
+
     save_archive(archive)
 
-    # 3. 메인 index.html 갱신 (최신 기도문 + 지난 기도문 목록 포함)
-    index_html = build_html_page(date_str, video_id, video_title, prayer_text, is_subpage=False, archive_list=archive)
+    latest_prayer_text = get_prayer_text(latest_video_id)
+    index_html = build_html_page(latest_date_str, latest_video_id, latest_video_title, latest_prayer_text, is_subpage=False, archive_list=archive)
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(index_html)
 
-    print(f"업데이트 완료: {subpage_path} 및 index.html 갱신 완료 (누적 {len(archive)}개)")
+    print(f"업데이트 완료: {latest_date_str} 및 누적 {len(archive)}개 아카이빙")
 
 if __name__ == "__main__":
     main()
