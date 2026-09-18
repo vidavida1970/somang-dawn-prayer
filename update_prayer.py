@@ -11,25 +11,78 @@ PRAYERS_DIR = "prayers"
 ARCHIVE_FILE = "archive.json"
 
 def get_recent_videos():
-    """유튜브 채널 RSS 피드에서 새벽기도회 영상 목록 추출"""
-    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={CHANNEL_ID}"
-    req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
-    videos = []
-    try:
-        with urllib.request.urlopen(req) as response:
-            xml_data = response.read()
-        root = ET.fromstring(xml_data)
-        ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
-        for entry in root.findall('atom:entry', ns):
-            title_el = entry.find('atom:title', ns)
-            id_el = entry.find('yt:videoId', ns)
-            if title_el is not None and id_el is not None:
-                title = title_el.text.strip()
-                if "새벽기도회" in title:
-                    videos.append((id_el.text.strip(), title))
-    except Exception as e:
-        print(f"RSS 조회 실패: {e}")
-    return videos
+    """유튜브 채널 페이지에서 최신 새벽기도회 영상 목록 추출"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    urls = [
+        "https://www.youtube.com/@smch/videos",
+        "https://www.youtube.com/channel/UCIItIEnZPjKo0eqvq9qIJAg/videos"
+    ]
+    
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                html = resp.read().decode('utf-8')
+            
+            match = re.search(r'var ytInitialData = ({.*?});</script>', html)
+            if match:
+                data = json.loads(match.group(1))
+                def find_videos(obj):
+                    found = []
+                    if isinstance(obj, dict):
+                        if 'lockupViewModel' in obj:
+                            vm = obj['lockupViewModel']
+                            vid = vm.get('contentId')
+                            title = vm.get('metadata', {}).get('lockupMetadataViewModel', {}).get('title', {}).get('content')
+                            if vid and title:
+                                found.append((vid, title))
+                        for v in obj.values():
+                            found.extend(find_videos(v))
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            found.extend(find_videos(item))
+                    return found
+                
+                all_vids = find_videos(data)
+                dawn_vids = [(v, t) for v, t in all_vids if '새벽기도회' in t]
+                if dawn_vids:
+                    seen = set()
+                    unique_vids = []
+                    for v, t in dawn_vids:
+                        if v not in seen:
+                            seen.add(v)
+                            unique_vids.append((v, t))
+                    print(f"채널 페이지에서 {len(unique_vids)}개 새벽기도 영상 탐색 성공")
+                    return unique_vids
+        except Exception as e:
+            print(f"{url} 조회 실패: {e}")
+            
+    # RSS 피드 폴백
+    rss_urls = [
+        "https://www.youtube.com/feeds/videos.xml?channel_id=UCIItIEnZPjKo0eqvq9qIJAg"
+    ]
+    for r_url in rss_urls:
+        try:
+            req = urllib.request.Request(r_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as response:
+                xml_data = response.read()
+            root = ET.fromstring(xml_data)
+            ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
+            vids = []
+            for entry in root.findall('atom:entry', ns):
+                title_el = entry.find('atom:title', ns)
+                id_el = entry.find('yt:videoId', ns)
+                if title_el is not None and id_el is not None and "새벽기도회" in title_el.text:
+                    vids.append((id_el.text.strip(), title_el.text.strip()))
+            if vids:
+                print(f"RSS 피드에서 {len(vids)}개 새벽기도 영상 탐색 성공")
+                return vids
+        except Exception as e:
+            print(f"RSS 폴백 실패: {e}")
+            
+    return []
 
 def extract_date_from_title(title):
     """영상 제목에서 날짜(YYYYMMDD 또는 오늘 날짜) 추출"""
@@ -44,7 +97,7 @@ def get_prayer_text(video_id):
     try:
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko'])
     except Exception as e:
-        print(f"자막 로드 실패: {e}")
+        print(f"자막 로드 실패 ({video_id}): {e}")
         return "당일 새벽기도 영상의 말씀과 기도 은혜를 나누는 공간입니다. 아래 영상 재생을 통해 목사님의 기도와 설교를 함께하실 수 있습니다."
 
     prayer_lines = []
@@ -83,6 +136,7 @@ def build_html_page(date_str, video_id, video_title, prayer_text, is_subpage=Fal
     current_url = f"https://vidavida1970.github.io/somang-dawn-prayer/{'prayers/' + date_str + '.html' if is_subpage else ''}"
     home_link = '<div style="margin-bottom: 20px;"><a href="../index.html" style="color: #2563eb; text-decoration: none; font-weight: bold;">← 오늘의 기도문(홈)으로 가기</a></div>' if is_subpage else ''
 
+    # 지난 기도 목록 HTML 조립
     archive_html = ""
     if not is_subpage and archive_list:
         archive_items = ""
